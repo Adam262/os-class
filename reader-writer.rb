@@ -18,6 +18,10 @@
 # Note: This will help ensure that reads and writes do not occur all at once
 # Use pthreads, mutexes, and condition variables to synchronize access to the shared variable
 
+# Key takeaway
+# - counter_mutex is over resource counter
+# - condition variable is over critical section
+
 class ReaderWriter
    require 'thread'
 
@@ -32,37 +36,47 @@ class ReaderWriter
   RESOURCE_COUNTER = 0
   
   NUM_READERS = 5
-  NUM_WRITERS = 5
+  # NUM_WRITERS = 5
 
   SHARED_VALUE = 0
 
   def call
+    threads = []
+    i = 0
+
     while i < NUM_READERS do
       i += 1
       
-      reader.read
+      thread = Thread.new do
+        reader.read
+      end
+
+      threads << thread
     end
+    
+    threads.each(&:join)
   end
 
   private 
 
   def reader
     Reader.new(
-      mutex: mutex,
+      counter_mutex: resource_counter_mutex,
       service: service,
-      condition: reader_condition,
+      reader_condition: reader_condition,
+      writer_condition: writer_condition,
     )
   end
   
-  def writer
-    Writer.new(
-      mutex: mutex,
-      service: service,
-      condition: reader_condition,
-    )
-  end
+  # def writer
+  #   Writer.new(
+  #     mutex: resource_counter_mutex,
+  #     service: service,
+  #     condition: writer_condition,
+  #   )
+  # end
   
-  def mutex
+  def resource_counter_mutex
     @mutex ||= Mutex.new
   end
 
@@ -80,115 +94,121 @@ class ReaderWriter
 end
 
 class Service
-  def writeable?
-    resource_counter == 0
+  def initialize
+    @resource_counter = ReaderWriter::RESOURCE_COUNTER
+    @shared_value = ReaderWriter::SHARED_VALUE
   end
 
-  def read_phase?
-    resource_counter >= 0
+  def writeable?
+    @resource_counter == 0
+  end
+
+  def readable?
+    @resource_counter >= 0
   end
   
   def write_phase?
-    resource_counter == -1
+    @resource_counter == -1
   end
 
   def add_additional_reader
-    resource_counter += 1
+    @resource_counter += 1
   end
 
   def remove_reader
-    resource_counter -= 1
+    @resource_counter -= 1
   end 
 
   def set_sole_writer
-    resource_counter = -1
+    @resource_counter = -1
   end
 
   def remove_sole_writer
-    resource_counter = 0
+    @resource_counter = 0
+  end
+
+  def log_readers
+    reader_count = @resource_counter <= 0 ? 0 : @resource_counter
+
+    puts "There are #{reader_count} readers" 
+  end
+
+  def log_shared_value
+    puts "The shared value is #{@shared_value}"
   end
 
   private
 
-  def resource_counter
-    ReaderWriter::RESOURCE_COUNTER
-  end
+  attr_accessor :resource_counter, :shared_value
 end
 
 class Reader
-  def initialize(mutex:, service:, condition:)
-    @mutex = mutex
+  def initialize(counter_mutex:, service:, reader_condition:, writer_condition:)
+    @counter_mutex = counter_mutex
     @service = service
-    @condition = condition
+    @reader_condition = reader_condition
+    @writer_condition = writer_condition
   end
 
   def read
-    thread do   
-      mutex.synchronize do
-        # Wait to acquire lock while sole writer is writing
-        condition.wait(mutex) while service.write_phase?
+    counter_mutex.synchronize do
+      # Wait to acquire lock while sole writer is writing
+      reader_condition.wait(counter_mutex) while service.write_phase?
 
-        service.add_additional_reader
-      end
+      service.add_additional_reader
     end
-  end
 
-  def read_end
-    thread do   
-      mutex.synchronize do
-        service.remove_reader
+    service.log_readers
+    service.log_shared_value
 
-        # signal if it is the last reader and RESOURCE_COUNTER is now zero
-        condition.signal if writeable?
-      end
+    counter_mutex.synchronize do
+      service.remove_reader
+
+      writer_condition.signal if service.writeable?
+      reader_condition.broadcast if service.readable?
     end
   end
 
   private
 
-  attr_reader :mutex, :service, :condition
-
-  def thread
-    @thread ||= Thread.new
-  end
+  attr_reader :counter_mutex, :service, :reader_condition, :writer_condition
 end
 
 class Writer
-  def initialize(mutex:, service:, condition:)
-    @mutex = mutex
+  def initialize(counter_mutex:, service:, writer_condition:, reader_condition:)
+    @counter_mutex = counter_mutex
     @service = service
-    @condition = condition
+    @writer_condition = writer_condition
+    @reader_condition = reader_condition
   end
 
   def write
-    thread do   
-      mutex.synchronize do
-        # Wait to acquire lock until writer is free to write
-        condition.wait(mutex) unless service.writeable? do
-        
-        service.set_sole_writer
+    counter_mutex.synchronize do
+      # Wait to acquire lock until writer is free to write
+      while !service.writeable? do
+        writer_condition.wait(counter_mutex) 
       end
+      
+      service.set_sole_writer
+    end
+
+    # write random value to shared value
+
+    counter_mutex.synchronize do
+      service.remove_sole_writer
+
+      reader_condition.broadcast
+      writer_condition.signal
     end
   end
 
-  def write_end
-    thread do   
-      mutex.synchronize do
-        service.remove_sole_writer
+  # service.remove_sole_writer
 
-        condition.broadcast
-      end
-    end
-  end
+  # reader_condition.broadcast
 
   private
 
-  attr_reader :mutex, :service, :condition
-
-  def thread
-    @thread ||= Thread.new
-  end
-
+  attr_reader :counter_mutex, :service, :writer_condition, :reader_condition
 end
 
 ReaderWriter.new.call
