@@ -1,3 +1,4 @@
+#!/usr/bin/env ruby
 
 # Priority Readers and Writers
 # Write a multi-threaded C program that gives readers priority over writers concerning a shared global) variable. Essentially, if any readers are waiting, then they have priority over writer threads -- writers can only write when there are no readers. This program should adhere to the following constraints:
@@ -36,19 +37,26 @@ class ReaderWriter
   RESOURCE_COUNTER = 0
   
   NUM_READERS = 5
-  # NUM_WRITERS = 5
+  NUM_WRITERS = 5
 
   SHARED_VALUE = 0
 
   def call
+    call_accessors(ceil: NUM_READERS, accessor: reader)
+    call_accessors(ceil: NUM_WRITERS, accessor: writer)
+  end
+
+  private 
+
+  def call_accessors(ceil:, accessor:)
     threads = []
     i = 0
 
-    while i < NUM_READERS do
+    while i < ceil do
       i += 1
       
       thread = Thread.new do
-        reader.read
+        accessor.call
       end
 
       threads << thread
@@ -56,8 +64,6 @@ class ReaderWriter
     
     threads.each(&:join)
   end
-
-  private 
 
   def reader
     Reader.new(
@@ -68,13 +74,14 @@ class ReaderWriter
     )
   end
   
-  # def writer
-  #   Writer.new(
-  #     mutex: resource_counter_mutex,
-  #     service: service,
-  #     condition: writer_condition,
-  #   )
-  # end
+  def writer
+    Writer.new(
+      counter_mutex: resource_counter_mutex,
+      service: service,
+      reader_condition: reader_condition,
+      writer_condition: writer_condition,
+    )
+  end
   
   def resource_counter_mutex
     @mutex ||= Mutex.new
@@ -127,14 +134,26 @@ class Service
     @resource_counter = 0
   end
 
-  def log_readers
+  def access_critical_section(&block)
     reader_count = @resource_counter <= 0 ? 0 : @resource_counter
+    sleep_time = rand(0.9)
+    
+    puts "Sleeping #{sleep_time} seconds"
+    sleep(sleep_time)
 
-    puts "There are #{reader_count} readers" 
+    yield if block_given?
+
+    puts "There are #{reader_count} readers\nThe shared value is #{@shared_value}"
   end
 
-  def log_shared_value
-    puts "The shared value is #{@shared_value}"
+  def read_critical_section
+    access_critical_section
+  end
+
+  def write_to_critical_section
+    access_critical_section do
+      @shared_value = rand(10_000)
+    end
   end
 
   private
@@ -150,7 +169,7 @@ class Reader
     @writer_condition = writer_condition
   end
 
-  def read
+  def call
     counter_mutex.synchronize do
       # Wait to acquire lock while sole writer is writing
       reader_condition.wait(counter_mutex) while service.write_phase?
@@ -158,8 +177,7 @@ class Reader
       service.add_additional_reader
     end
 
-    service.log_readers
-    service.log_shared_value
+    service.read_critical_section
 
     counter_mutex.synchronize do
       service.remove_reader
@@ -182,7 +200,7 @@ class Writer
     @reader_condition = reader_condition
   end
 
-  def write
+  def call
     counter_mutex.synchronize do
       # Wait to acquire lock until writer is free to write
       while !service.writeable? do
@@ -192,7 +210,7 @@ class Writer
       service.set_sole_writer
     end
 
-    # write random value to shared value
+    service.write_to_critical_section
 
     counter_mutex.synchronize do
       service.remove_sole_writer
@@ -201,10 +219,6 @@ class Writer
       writer_condition.signal
     end
   end
-
-  # service.remove_sole_writer
-
-  # reader_condition.broadcast
 
   private
 
