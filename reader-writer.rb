@@ -36,14 +36,17 @@ class ReaderWriter
   ## RC == -1 => resource is not free for read or write
   RESOURCE_COUNTER = 0
   
-  NUM_READERS = 5
+  NUM_READERS = 20
   NUM_WRITERS = 5
 
   SHARED_VALUE = 0
 
   def call
-    call_accessors(ceil: NUM_READERS, accessor: reader)
-    call_accessors(ceil: NUM_WRITERS, accessor: writer)
+    reader_threads = call_accessors(ceil: NUM_READERS, accessor: reader)
+    writer_threads = call_accessors(ceil: NUM_WRITERS, accessor: writer)
+    
+    reader_threads.each(&:join)
+    writer_threads.each(&:join)
   end
 
   private 
@@ -56,13 +59,17 @@ class ReaderWriter
       i += 1
       
       thread = Thread.new do
+        sleep_time = rand(1..5)
+        sleep(sleep_time)
+        puts "Slept #{sleep_time} seconds"
+
         accessor.call
       end
 
       threads << thread
     end
-    
-    threads.each(&:join)
+
+    threads
   end
 
   def reader
@@ -136,11 +143,7 @@ class Service
 
   def access_critical_section(&block)
     reader_count = @resource_counter <= 0 ? 0 : @resource_counter
-    sleep_time = rand(0.9)
     
-    puts "Sleeping #{sleep_time} seconds"
-    sleep(sleep_time)
-
     yield if block_given?
 
     puts "There are #{reader_count} readers\nThe shared value is #{@shared_value}"
